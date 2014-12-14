@@ -6,7 +6,7 @@
 # Compiler options here.
 ifeq ($(USE_OPT),)
 #  USE_OPT = -O2 -ggdb -fomit-frame-pointer -falign-functions=16
-  USE_OPT = -O2 -ggdb -fomit-frame-pointer -falign-functions=16 --specs=nano.specs --specs=rdimon.specs
+  USE_OPT = -O2 -ggdb -fomit-frame-pointer -falign-functions=16 --specs=nano.specs --specs=rdimon.specs --std=gnu99
 endif
 
 # C specific options here (added to USE_OPT).
