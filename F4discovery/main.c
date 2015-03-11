@@ -1,11 +1,27 @@
+/**
+ * The following implementation is only a proof-of-concept that a OV2640
+ * (or any other similar camera) can be easily connected to a MCU even without
+ * the right hardware interface. Most F4 indeed does have the DCMI interface for
+ * interfacing with such cameras, it was used only because the F4discovery
+ * board was handy.
+ *
+ * My spaghetti code is dedicated to the public domain and I really hope that
+ * nobody will ever use it. Some foreign parts use different licensing.
+ */
+
 #include "ch.h"
 #include "hal.h"
 #include "chprintf.h"
 
+/* Allow chibios to use 64K of CCM memory on the F4. */
 MemoryHeap ccm_heap;
 
-
-/* based on:*/
+/**
+ * The following part is borrowed from the linux ov2640 driver. Some of the
+ * registers are named but still there are many without any documentation.
+ * Another possible source is the ArduCam project but it is not documented
+ * and there are long arrays of magic values only.
+ */
 
 /*
  * ov2640 Camera Driver
@@ -249,16 +265,10 @@ MemoryHeap ccm_heap;
 #define HISTO_LOW   0x61 /* Histogram Algorithm Low Level */
 #define HISTO_HIGH  0x62 /* Histogram Algorithm High Level */
 
-/*
- * ID
- */
 #define MANUFACTURER_ID	0x7FA2
 #define PID_OV2640	0x2642
 #define VERSION(pid, ver) ((pid << 8) | (ver & 0xFF))
 
-/*
- * Struct
- */
 struct regval_list {
 	u8 reg_num;
 	u8 value;
@@ -296,7 +306,9 @@ struct ov2640_win_size {
 
 
 /*
- * Registers settings
+ * Registers settings. Most of them are undocumented. Some documentation is
+ * is available in the OV2640 datasheet, the OV2640 hardware app notes and
+ * the OV2640 software app notes documents.
  */
 
 #define ENDMARKER { 0xff, 0xff }
@@ -307,10 +319,11 @@ static const struct regval_list ov2640_init_regs[] = {
 	{ 0x2e,   0xdf },
 	{ BANK_SEL, BANK_SEL_SENS },
 	{ 0x3c,   0x32 },
-	{ CLKRC, CLKRC_DIV_SET(10) },
+	{ CLKRC, CLKRC_DIV_SET(20) },
 	{ COM2, COM2_OCAP_Nx_SET(3) },
 	{ REG04, REG04_DEF | REG04_HREF_EN },
-	{ COM8,  COM8_DEF | COM8_BNDF_EN | COM8_AGC_EN | COM8_AEC_EN },
+	{ COM8,  COM8_DEF | COM8_AGC_EN | COM8_AEC_EN },
+	//~ { AEC,    0x00 },
 	{ COM9, COM9_AGC_GAIN_8x | 0x08},
 	{ 0x2c,   0x0c },
 	{ 0x33,   0x78 },
@@ -436,7 +449,7 @@ static const struct regval_list ov2640_init_regs[] = {
 	{ 0xc5,   0x11 },
 	{ 0xc6,   0x51 },
 	{ 0xbf,   0x80 },
-	{ 0xc7,   0x10 },
+	{ 0xc7,   0x10 }, /* white balance */
 	{ 0xb6,   0x66 },
 	{ 0xb8,   0xA5 },
 	{ 0xb7,   0x64 },
@@ -471,7 +484,7 @@ static const struct regval_list ov2640_init_regs[] = {
 	{ 0xe5,   0x1f },
 	{ 0xe1,   0x77 },
 	{ 0xdd,   0x7f },
-	{ CTRL0,  CTRL0_YUV422 | CTRL0_YUV_EN | CTRL0_RGB_EN },
+	{ CTRL0,  CTRL0_YUV422 | CTRL0_YUV_EN },
 	ENDMARKER,
 };
 
@@ -612,13 +625,12 @@ static const struct regval_list ov2640_rgb565_le_regs[] = {
 };
 
 static const struct regval_list ov2640_jpeg_regs[] = {
-	//~ { IMAGE_MODE, IMAGE_MODE_JPEG_EN },
 	{ BANK_SEL, BANK_SEL_DSP },
 	{ 0xe0, 0x14 },
 	{ 0xe1, 0x77 },
 	{ 0xe5, 0x1f },
 	{ 0xd7, 0x03 },
-	{ 0xda, 0x10 },
+	{ IMAGE_MODE, IMAGE_MODE_JPEG_EN },
 	{ 0xe0, 0x00 },
 	{ BANK_SEL, BANK_SEL_SENS },
 	{ 0x04, 0x08 },
@@ -626,7 +638,9 @@ static const struct regval_list ov2640_jpeg_regs[] = {
 	ENDMARKER,
 };
 
-
+/**
+ * ChibiOS HAL configuration part.
+ */
 static const I2CConfig i2cfg1 = {
 	OPMODE_I2C,
 	100000,
@@ -648,13 +662,17 @@ static const PWMConfig pwmcfg3 = {
 };
 
 SerialConfig uart2_config = {
-        460800,
+        2000000,
         0,
         USART_CR2_STOP1_BITS | USART_CR2_LINEN,
         0
 };
 
 
+/**
+ * Functions for working with the SCCB bus using the I2C HAL driver and
+ * peripheral.
+ */
 int32_t sccb_read_reg(uint8_t addr, uint8_t reg, uint8_t *value) {
 	systime_t timeout = MS2ST(4);
 	uint8_t txbuf[1] = {reg};
@@ -711,11 +729,12 @@ int32_t ov2640_init(void) {
 	sccb_write_reg(addr, 0x12, 80);   /* software reset */
 	chThdSleepMilliseconds(50);
 
+	/* Write selected arrays to the camera to initialize it and set the
+	 * desired output format. */
 	ov2640_write_array(ov2640_init_regs);
 
-
 	ov2640_write_array(ov2640_size_change_preamble_regs);
-	ov2640_write_array(ov2640_qvga_regs);
+	ov2640_write_array(ov2640_vga_regs);
 
 	ov2640_write_array(ov2640_format_change_preamble_regs);
 	ov2640_write_array(ov2640_yuyv_regs);
@@ -725,59 +744,67 @@ int32_t ov2640_init(void) {
 	return 0;
 }
 
+
 uint32_t dmamode;
 const stm32_dma_stream_t *dmastp;
-uint8_t sample_buffer[32768];
+uint8_t sample_buffer[60000];
 Semaphore frame_ready_sem;
 
 
 int32_t dma_start(void) {
-	dmaStreamEnable(dmastp);
-
+	(dmastp)->stream->CR |= (STM32_DMA_CR_EN);
 	return 0;
 }
 
 
 int32_t dma_stop(void) {
 	(dmastp)->stream->CR &= ~(STM32_DMA_CR_EN);
-
 	return 0;
 }
 
 
-/* href EXTI interrupt handler */
+/* HREF EXTI interrupt handler (channel 1) */
 CH_IRQ_HANDLER(EXTI1_IRQHandler) {
 	CH_IRQ_PROLOGUE();
 
-	EXTI->PR |= EXTI_PR_PR1;
-
 	if (palReadPad(GPIOA, 1)) {
+		/* HREF rising edge, start capturing data on pixel clock */
 		STM32_TIM1->DIER = TIM_DIER_CC1DE;
 	} else {
+		/* HREF falling edge, stop capturing */
 		STM32_TIM1->DIER = 0;
 	}
 
+	EXTI->PR |= EXTI_PR_PR1;
 	CH_IRQ_EPILOGUE();
 }
 
-
+/* VSYNC EXTI interrupt handler (channel 2) */
 CH_IRQ_HANDLER(EXTI2_IRQHandler) {
 	CH_IRQ_PROLOGUE();
 
-	EXTI->PR |= EXTI_PR_PR2;
-
 	if (palReadPad(GPIOB, 2)) {
-		palSetPad(GPIOD, 12);
+		/* VSYNC rising edge - frame is starting, start DMA and enable
+		 * timer 1 input capture trigger. LED showing that capture is
+		 * running is connected to PD12. */
 		dma_start();
+		/* we also enable input capture before HREF goes high - otherwise
+		 * we may miss some bytes at the beginning og the frame. This also
+		 * adds more invalid bytes which will need to be removed later */
+		STM32_TIM1->DIER = TIM_DIER_CC1DE;
+		palSetPad(GPIOD, 12);
 	} else {
-		palClearPad(GPIOD, 12);
+		/* VSYNC falling edge - end if JPEG frame. Stop the DMA, disable
+		 * capture LED and signal the semaphore (data can be processed). */
 		dma_stop();
+		palClearPad(GPIOD, 12);
 
 		chSysLockFromIsr();
 		chSemSignalI(&frame_ready_sem);
 		chSysUnlockFromIsr();
 	}
 
+	EXTI->PR |= EXTI_PR_PR2;
 	CH_IRQ_EPILOGUE();
 }
 
@@ -804,6 +831,8 @@ static void dma_interrupt(void *p, uint32_t flags) {
 	}
 	if ((flags & STM32_DMA_ISR_TCIF) != 0) {
 		palClearPad(GPIOD, 14);
+		/* stop dma */
+		dma_stop();
 	}
 }
 
@@ -833,26 +862,18 @@ int32_t dma_init(void) {
 	TIM_TypeDef *tim = (TIM_TypeDef *)STM32_TIM1;
 	rccEnableTIM1(FALSE);
 	rccResetTIM1();
-	//nvicEnableVector(STM32_TIM8_UP_NUMBER, CORTEX_PRIORITY_MASK(STM32_GPT_TIM8_IRQ_PRIORITY));
-	tim->PSC = (STM32_TIMCLK2 / 80000) - 1;
 	tim->CCR1 = 0;
 	tim->CCER = 0;
 	tim->ARR  = 10;
-	tim->EGR  = TIM_EGR_UG;
 	tim->CNT  = 0;
 	tim->SR   = 0;
 
 	/* set channel 1 to input */
 	tim->CCMR1 = TIM_CCMR1_CC1S_0;
-
 	/* enable first input capture channel */
 	tim->CCER = TIM_CCER_CC1E;
 
-	/* enable DMA trigger generation on input capture */
-	//~ tim->DIER = TIM_DIER_CC1DE;
-	//~ tim->CR2  = TIM_CR2_CCDS;
 	tim->CR2 = 0;
-	//~ tim->CR1  = TIM_CR1_CEN;
 	tim->CR1 = 0;
 
 	return 0;
@@ -873,17 +894,22 @@ int32_t dma_free(void) {
 }
 
 
+/**
+ * This single thread initializes the camera and continuously fetches images
+ * from it. They are sent over the USART interface as simple newline delimited
+ * hexdumps of data.
+ */
 static msg_t Thread1(void *arg) {
 	(void)arg;
 
 	chRegSetThreadName("test");
 
-	/* I2C1_SDA */
+	/* I2C1_SDA, I2C1, AF4 */
 	palSetPadMode(GPIOB, 7, PAL_MODE_ALTERNATE(4) | PAL_STM32_OTYPE_OPENDRAIN | PAL_STM32_PUDR_PULLUP);
-	/* I2C1_SCL */
+	/* I2C1_SCL, I2C1, AF4 */
 	palSetPadMode(GPIOB, 8, PAL_MODE_ALTERNATE(4) | PAL_STM32_OTYPE_OPENDRAIN | PAL_STM32_PUDR_PULLUP);
 
-	/* XCLK */
+	/* XCLK, timer 3, channel 1, AF2 */
 	palSetPadMode(GPIOC, 6, PAL_MODE_ALTERNATE(2));
 	/* Reset */
 	palSetPadMode(GPIOC, 8, PAL_MODE_OUTPUT_PUSHPULL);
@@ -891,7 +917,7 @@ static msg_t Thread1(void *arg) {
 	palSetPadMode(GPIOC, 9, PAL_MODE_OUTPUT_PUSHPULL);
 
 	/* PCLK, timer1 input capture, channel 1 */
-	palSetPadMode(GPIOA, 8, PAL_MODE_ALTERNATE(1) | PAL_STM32_PUDR_PULLUP);
+	palSetPadMode(GPIOA, 8, PAL_MODE_ALTERNATE(1));
 
 	/* USART2 TX */
 	palSetPadMode(GPIOA, 2, PAL_MODE_ALTERNATE(7));
@@ -900,7 +926,7 @@ static msg_t Thread1(void *arg) {
 	/* MCO1 */
 	//~ palSetPadMode(GPIOA, 8, PAL_MODE_ALTERNATE(0));
 
-	/* TODO apply clock here */
+	/* apply clock here */
 	pwmStart(&PWMD3, &pwmcfg3);
 	pwmEnableChannel(&PWMD3, 0, 1);
 	chThdSleepMilliseconds(5);
@@ -924,7 +950,7 @@ static msg_t Thread1(void *arg) {
 	chSemInit(&frame_ready_sem, 0);
 
 	dma_init();
-	dma_start();
+	//~ dma_start();
 	exti_start();
 
 	while (1) {
@@ -942,12 +968,29 @@ static msg_t Thread1(void *arg) {
 		palSetPad(GPIOD, 15);
 		uint32_t data_len = sizeof(sample_buffer) - dmastp->stream->NDTR;
 
+		if (data_len == 0) {
+			data_len = sizeof(sample_buffer);
+		}
+
+		/* There is a chance that some redundant data will be captured
+		 * before the actual JPEG output is started. Move the buffer
+		 * forward until we find 0xffd8 (start of the JPEG image). */
+		uint8_t *buf = sample_buffer;
+		while (data_len > 0) {
+			if (*buf == 0xff && *(buf + 1) == 0xd8) {
+				break;
+			}
+			data_len--;
+			buf++;
+		}
+
 		//~ chprintf((struct BaseSequentialStream *)(&SD2), "HEADER %d\r\n", data_len);
 		for (uint32_t i = 0; i < data_len; i++) {
-			chprintf((struct BaseSequentialStream *)(&SD2), "%02x", sample_buffer[i]);
+			chprintf((struct BaseSequentialStream *)(&SD2), "%02x", buf[i]);
 		}
 		chprintf((struct BaseSequentialStream *)(&SD2), "\r\n");
 
+		/* Wait some time and capture again. */
 		chThdSleepMilliseconds(500);
 		palClearPad(GPIOD, 15);
 	}
@@ -972,7 +1015,6 @@ int main(void) {
 	palClearPad(GPIOD, 13);
 	palClearPad(GPIOD, 14);
 	palClearPad(GPIOD, 15);
-
 
 
 	chThdCreateFromHeap(NULL, 4000, NORMALPRIO, Thread1, NULL);
