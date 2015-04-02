@@ -853,6 +853,8 @@ int32_t dma_init(void) {
 
 	dmaStreamAllocate(dmastp, 2, (stm32_dmaisr_t)dma_interrupt, NULL);
 
+	/* GPIOE pins 8-15 are used for data input. Configure GPIOE->IDR's
+	 * second byte as the DMA source (assuming little-endian byte order). */
 	dmaStreamSetPeripheral(dmastp, (uint8_t *)(&(GPIOE->IDR)) + 1);
 	dmaStreamSetMemory0(dmastp, sample_buffer);
 	dmaStreamSetTransactionSize(dmastp, sizeof(sample_buffer));
