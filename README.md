@@ -12,3 +12,9 @@ nobody will ever use it. Some foreign parts use different licensing.
 
 Full description including the hardware connections is available at
 [http://qyx.krtko.org/projects/ov2640_stm32/](http://qyx.krtko.org/projects/ov2640_stm32/)
+
+
+Update 11/2018
+----------------
+
+The repository now contains a DCMI-enabled version running on the F4Discovery board.
